@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mini POS</title>
+<style>
+  :root{--ink:#16232a;--line:#d7dfe3;--accent:#0f5a6e;--bad:#a3301c;--ok:#15604a}
+  *{box-sizing:border-box}
+  body{font:15px/1.5 system-ui,sans-serif;color:var(--ink);margin:0;padding:24px;background:#f4f7f8}
+  .wrap{max-width:720px;margin:0 auto;background:#fff;border:1px solid var(--line);border-radius:10px;padding:22px}
+  h1{font-size:20px;margin:0 0 16px}
+  h2{font-size:15px;margin:20px 0 8px;text-transform:uppercase;letter-spacing:.06em;color:#5d7077}
+  label{display:block;font-size:13px;margin-bottom:4px;color:#5d7077}
+  input,select{padding:8px 10px;border:1px solid var(--line);border-radius:6px;font:inherit;width:100%}
+  button{padding:8px 14px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;font:inherit;cursor:pointer}
+  button.sec{background:#fff;color:var(--accent)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px}
+  .row>div{flex:1;min-width:130px}
+  table{width:100%;border-collapse:collapse;margin:8px 0 14px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+  .msg{padding:9px 12px;border-radius:6px;margin-bottom:12px}
+  .msg.err{background:#fbeae6;color:var(--bad)}
+  .msg.ok{background:#e4f1ec;color:var(--ok)}
+  [hidden]{display:none!important}
+  .totals td{border:0;padding:3px 8px}
+  .totals tr:last-child td{font-weight:700;border-top:1px solid var(--line);padding-top:7px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Mini POS</h1>
+
+  <div id="msg" class="msg" hidden></div>
+
+  <section id="loginPane">
+    <h2>Sign in</h2>
+    <div class="row">
+      <div><label for="username">Username</label><input id="username" autocomplete="off"></div>
+      <div><label for="password">Password</label><input id="password" type="password" autocomplete="off"></div>
+      <div style="flex:0"><button id="loginBtn">Sign in</button></div>
+    </div>
+  </section>
+
+  <section id="posPane" hidden>
+    <h2>Order — signed in as <span id="whoami"></span></h2>
+    <table id="catalog"><thead><tr><th>Item</th><th class="num">Price</th><th class="num">Qty</th></tr></thead><tbody></tbody></table>
+
+    <div class="row">
+      <div style="flex:0"><button id="createBtn">Create order</button></div>
+      <div style="flex:0"><button id="settleBtn" class="sec" disabled>Settle</button></div>
+      <div style="flex:0"><button id="voidBtn" class="sec" disabled>Void</button></div>
+      <div style="flex:0"><button id="refundBtn" class="sec" disabled>Refund all</button></div>
+    </div>
+
+    <table class="totals" id="totals" hidden>
+      <tr><td>Subtotal</td><td class="num" id="subtotal"></td></tr>
+      <tr><td>Tax 8.25%</td><td class="num" id="tax"></td></tr>
+      <tr><td>Total</td><td class="num" id="total"></td></tr>
+    </table>
+    <p id="orderState" hidden>State: <b id="stateVal"></b></p>
+  </section>
+</div>
+
+<script>
+const money = (c) => '$' + (c / 100).toFixed(2);
+let token = null, role = null, order = null;
+
+const $ = (id) => document.getElementById(id);
+function say(text, kind) {
+  const el = $('msg');
+  el.textContent = text; el.className = 'msg ' + kind; el.hidden = !text;
+}
+
+async function api(method, path, body, headers = {}) {
+  const res = await fetch(path, {
+    method,
+    headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}), ...headers },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return { status: res.status, body: await res.json().catch(() => ({})) };
+}
+
+async function loadCatalog() {
+  const { body } = await api('GET', '/api/items');
+  $('catalog').querySelector('tbody').innerHTML = body.items.map((i) => `
+    <tr data-sku="${i.sku}">
+      <td>${i.name}</td>
+      <td class="num">${money(i.cents)}</td>
+      <td class="num"><input id="qty-${i.sku}" type="number" min="0" value="0" style="width:72px;text-align:right"></td>
+    </tr>`).join('');
+}
+
+function renderOrder(o) {
+  order = o;
+  $('totals').hidden = false;
+  $('subtotal').textContent = money(o.subtotalCents);
+  $('tax').textContent = money(o.taxCents);
+  $('total').textContent = money(o.totalCents);
+  $('orderState').hidden = false;
+  $('stateVal').textContent = o.state;
+  $('settleBtn').disabled = o.state !== 'OPEN';
+  $('voidBtn').disabled = o.state !== 'OPEN';
+  $('refundBtn').disabled = !(o.state === 'SETTLED' && role === 'manager');
+}
+
+$('loginBtn').addEventListener('click', async () => {
+  say('', '');
+  const { status, body } = await api('POST', '/api/login', {
+    username: $('username').value.trim(),
+    password: $('password').value,
+  });
+  if (status !== 200) {
+    say(body.error === 'ACCOUNT_LOCKED'
+      ? 'This account is locked. Ask a manager.'
+      : 'Username or password is not correct.', 'err');
+    return;
+  }
+  token = body.token; role = body.role;
+  $('whoami').textContent = role;
+  $('loginPane').hidden = true;
+  $('posPane').hidden = false;
+  await loadCatalog();
+});
+
+$('createBtn').addEventListener('click', async () => {
+  say('', '');
+  const lines = [...document.querySelectorAll('#catalog tbody tr')]
+    .map((tr) => ({ sku: tr.dataset.sku, qty: Number($('qty-' + tr.dataset.sku).value) }))
+    .filter((l) => l.qty > 0);
+  if (!lines.length) { say('Add at least one item before creating an order.', 'err'); return; }
+  const { status, body } = await api('POST', '/api/orders', { lines });
+  if (status !== 201 && status !== 200) { say('Could not create the order.', 'err'); return; }
+  renderOrder(body);
+});
+
+for (const [id, action] of [['settleBtn', 'settle'], ['voidBtn', 'void']]) {
+  $(id).addEventListener('click', async () => {
+    say('', '');
+    const { status, body } = await api('POST', `/api/orders/${order.id}/${action}`);
+    if (status !== 200) { say(`Cannot ${action} an order in state ${order.state}.`, 'err'); return; }
+    renderOrder(body);
+    say(`Order ${action === 'settle' ? 'settled' : 'voided'}.`, 'ok');
+  });
+}
+
+$('refundBtn').addEventListener('click', async () => {
+  say('', '');
+  const { status, body } = await api('POST', `/api/orders/${order.id}/refund`, { amountCents: order.totalCents });
+  if (status !== 200) { say('Refund was refused.', 'err'); return; }
+  renderOrder(body);
+  say('Refund completed.', 'ok');
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+{
+  "name": "pos-quality-gate",
+  "version": "1.0.0",
+  "description": "A small, deliberately-scoped Playwright suite around a mini POS checkout.",
+  "main": "index.js",
+  "scripts": {
+    "app": "node app/server.js",
+    "test": "playwright test",
+    "ui": "playwright test --project=ui",
+    "api": "playwright test --project=api",
+    "report": "playwright show-report"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@playwright/test": "^1.56.0"
+  },
+  "private": true
+}
